@@ -1,0 +1,673 @@
+---
+title: "PLab Data Analysis"
+author: "Wyatt King & Oliver Fuisz"
+date: "2025-04-20"
+output: html_document
+---
+
+```{r}
+library(readxl)
+library(dplyr)
+library(webshot2)
+library(gt)
+library(ggplot2)
+library(tidyr)
+```
+
+# Data Cleaning
+
+```{r}
+files<- list.files("/Users/wyatttheking/Desktop/Spring 2025/Politics in the Lab/FINISHED GAMES")
+paths<- paste0("/Users/wyatttheking/Desktop/Spring 2025/Politics in the Lab/FINISHED GAMES/", files)
+paths<-paths[c(2, 6:13, 3:5)]
+```
+
+First, we're going to build a data frame that compiles all of the individual spreadsheets into one larger, cumulative spreadsheet.
+
+```{r}
+data<- data.frame()
+for(i in seq_along(paths)){
+  df<- data.frame()
+  for(j in 3:23){
+    excel<- read_xlsx(paths[i], sheet=j, range = "B3:G7")
+    excel<- excel %>%
+      mutate(Game= paste0("Game ", j-2)) # Create a column indicating the game number
+    df<- rbind(df, excel)
+  }
+  df<- df %>%
+    mutate(Player= paste0("Player ", i)) # Create a column indicating the player number
+  data<- rbind(data, df)
+}
+```
+
+Next, we're going to merge with the player assignments spreadsheet to get players' initial allocations and whether they were play even or odd splits. We need to reorganize this spreadsheet to be able to merge it with the above.
+
+```{r}
+# Call the player assignments
+player_assignments<- read.csv("/Users/wyatttheking/Desktop/Spring 2025/Politics in the Lab/Player Assignment - Static Sheet.csv")
+
+# Drop the trial rounds
+player_assignments<-player_assignments[-c(66:71)]
+player_assignments<-player_assignments %>%
+  mutate(Player..= paste("Player", Player..))
+player_assignments<-player_assignments[,-2]
+```
+
+We're going to rename columns to make them easier to work with.
+
+```{r}
+cols<-colnames(player_assignments)
+cols_split<-strsplit(cols, "Round.")
+column_vector<- vector(mode="character", length=length(cols))
+for(j in seq_along(cols_split)){
+  if(grepl(" ", cols_split[j])== TRUE){
+    cols_split[[j]]<- paste("Game", cols_split[[j]])[2]
+  }
+  column_vector[j]<- cols_split[[j]]
+}
+colnames(player_assignments)<- column_vector
+colnames(player_assignments)[1]<- "Player"
+```
+
+We split the columns into groups of three containing the game number, whether the split is odd or even, and the initial allocation.
+
+```{r}
+split_into_threes<-split(colnames(player_assignments)[-1], ceiling(seq_along(colnames(player_assignments)) / 3))
+split_into_threes<-split_into_threes[-length(split_into_threes)]
+```
+
+Next, we create a for loop that merges the above groupings of three into one data frame.
+
+```{r}
+reorganized_pa<- data.frame()
+for(j in seq_along(split_into_threes)){
+  get_cols<- c("Player", split_into_threes[[j]])
+  filter_df<- player_assignments[get_cols]
+  filter_df<- filter_df %>%
+    mutate(Game= split_into_threes[[j]][1])
+  colnames(filter_df)<- c("Player", "opponent", "split", "i_allocation", "Game")
+  reorganized_pa<- rbind(reorganized_pa, filter_df)
+}
+```
+
+Next, we merge both the game spreadsheets with the player assignment spreadsheet.
+
+```{r}
+merged_df<- merge(data, reorganized_pa, by=c("Player", "Game"))
+merged_df<-merged_df[, c("Player", "Game", "opponent", "Round Number", "Your Play", "Opponent's Play", "Your Current Allocation", "Opponent's Current Allocation")]
+```
+
+It seems as if there is a discrepency between the player assignment spreadsheet and the allocations people were actually playing. Hence, we create a function that gets players actual initial allocation.
+
+```{r}
+get_initial<-function(x){
+  if(is.na(x)){
+    return(NA)
+  }
+  else if(x> 17 & x < 23){
+    return(20)
+  }
+  else{
+    return(11)
+  }
+}
+```
+
+Now, we create a new data frame that includes players' actual initial allocations (to do so, we use the initial allocations from their player spreadsheets).
+
+```{r}
+updated_df<-data.frame()
+for(j in seq_along(unique(merged_df$Player))){
+  player_to_search<- paste("Player", j)
+  search_player<- merged_df[merged_df$Player== player_to_search,]
+  for(i in seq_along(unique(search_player$Game))){
+    game_to_search<- paste("Game", i)
+    search_game<- search_player[search_player$Game== game_to_search,]
+    search_game<- search_game[order(search_game$`Round Number`, decreasing=F),]
+    change_col<- search_game %>%
+      mutate(pi_allocation= get_initial(search_game$`Your Current Allocation`[1])) %>%
+      mutate(oi_allocation=get_initial(search_game$`Opponent's Current Allocation`[1]))
+    updated_df<- rbind(updated_df, change_col)
+  }
+}
+```
+
+Next, we generate a function that categorizes players' games based on if they played an odd or even splitt.
+
+```{r}
+# We create a function that characterizes splits in our data
+split_c<- function(x, y){
+  if(x==y & x==11){
+    return("even")
+  }
+  else if(x != y){
+    return("odd")
+  }
+  else if(x==y & x==20){
+    return(NA)
+  }
+}
+updated_df$split<- mapply(split_c, updated_df$pi_allocation, updated_df$oi_allocation)
+```
+
+We write our data locally.
+
+```{r}
+write_path<- paste0("/Users/wyatttheking/Desktop/Spring 2025/Politics in the Lab/FINISHED GAMES/Uncleaned Data.csv")
+write.csv(updated_df, file=write_path)
+```
+
+We clean our data to exclude circumstances where there is a 20-20 split. We lose a minimal amount of data from doing this (around 1.5% of the total).
+
+```{r}
+cleaned_df<-updated_df[is.na(updated_df$split)==F,]
+
+# Amount of data we lost from cleaning
+1-nrow(cleaned_df)/nrow(updated_df)
+```
+
+We write our cleaned data set locally.
+
+```{r}
+write_path<- paste0("/Users/wyatttheking/Desktop/Spring 2025/Politics in the Lab/FINISHED GAMES/Cleaned Data.csv")
+write.csv(cleaned_df, file=write_path)
+```
+
+# Data "Analysis"
+
+### Regression Model
+
+We run a logistic regression to see what factors influence whether players play A or B. A is the positive case.
+
+```{r}
+reg_data<-na.omit(cleaned_df)
+reg_data$Game<-as.numeric(gsub("[A-Za-z ]", "", reg_data$Game))
+
+colnames(reg_data)<- c("Player", "Game", "opponent", "Round", "y_play", "o_play", "y_c_all", "o_c_all", "pi_allocation", "oi_allocation", "split")
+
+convert_y_var<- function(x){
+  if(x=="A"){
+    return(1)
+  }
+  else if(x=="B"){
+    return(0)
+  }
+}
+
+reg_data$y_play<- sapply(reg_data$y_play, convert_y_var)
+reg_data$split<- as.factor(reg_data$split)
+
+m1<-glm(y_play~Round+Game+pi_allocation+oi_allocation, family="binomial", data=reg_data)
+sum_m1<-summary(m1)
+
+reg_df<-as.data.frame(sum_m1$coefficients)
+reg_df<-round(reg_df, 3)
+
+gt::gt(reg_df, rownames_to_stub=T) |>
+  tab_header(title="Figure 4", subtitle="Results from Logistic Regression Model") |>
+  cols_align("left") |>
+  opt_table_font(font=list(google_font(name="Times New Roman")))
+print(fig_2)
+
+```
+
+### Proportion of people who defect in the even split
+
+We generate a table displaying what proportion of people defect in an even split scenario based on the round number.
+
+```{r}
+even<- updated_df[updated_df$split=="even",]
+no_na_even<- na.omit(even)
+
+categorize_play<-function(x){
+  if(x=="A"){
+    return(1)
+  }
+  else if(x=="B"){
+    return(0)
+  }
+}
+
+no_na_even$play_sorted<- sapply(no_na_even$`Your Play`, categorize_play)
+
+even_plays_by_round<-no_na_even %>%
+  group_by(`Round Number`) %>%
+  summarize("Proportion Defect"= mean(play_sorted), "n"=n())
+
+even_plays_by_round$`Proportion Defect`<- round(even_plays_by_round$`Proportion Defect`, digits=3)
+
+even_plays_by_round$Equilibrium<- c(0.626, 0.632, 0.667, 1)
+
+even_plays_by_round<-even_plays_by_round[, c("Round Number", "Proportion Defect", "Equilibrium", "n")]
+```
+
+```{r}
+fig_1<-gt(even_plays_by_round) |>
+  tab_header(title="Figure 1", subtitle="Play by Round: Even Split") |>
+  cols_align("left") |>
+  opt_table_font(font=list(google_font(name="Times New Roman")))
+print(fig_1)
+```
+
+### Proportion of people who defect in the even split
+
+We generate tables displaying what proportion of people defect in an odd split scenario based on the round number and whether they were the \$20 or \$11 share.
+
+```{r}
+odd<- updated_df[updated_df$split=="odd",]
+no_na_odd<- na.omit(odd)
+no_na_odd$play_sorted<- sapply(no_na_odd$`Your Play`, categorize_play)
+
+all_20<- no_na_odd[no_na_odd$pi_allocation== 20,]
+all_11<- no_na_odd[no_na_odd$pi_allocation== 11,]
+
+all_20_plays_by_round<-all_20 %>%
+  group_by(`Round Number`) %>%
+  summarize("Proportion Defect"= mean(play_sorted), "n"=n())
+
+all_11_plays_by_round<-all_11 %>%
+  group_by(`Round Number`) %>%
+  summarize("Proportion Defect"= mean(play_sorted), "n"=n())
+
+all_20_plays_by_round$`Proportion Defect`<- round(all_20_plays_by_round$`Proportion Defect`, digits=3)
+all_11_plays_by_round$`Proportion Defect`<- round(all_11_plays_by_round$`Proportion Defect`, digits=3)
+
+all_20_plays_by_round$Equilibrium<- c(1, 1, 1, 1)
+all_11_plays_by_round$Equilibrium<- c(0, 0, 0, 1)
+
+all_20_plays_by_round<-all_20_plays_by_round[, c("Round Number", "Proportion Defect", "Equilibrium", "n")]
+all_11_plays_by_round<-all_11_plays_by_round[, c("Round Number", "Proportion Defect", "Equilibrium", "n")]
+```
+
+```{r}
+fig_2<-gt::gt(all_20_plays_by_round) |>
+  tab_header(title="Figure 2", subtitle="Play by Round: Odd Split, $20") |>
+  cols_align("left") |>
+  opt_table_font(font=list(google_font(name="Times New Roman")))
+print(fig_2)
+
+fig_3<-gt::gt(all_11_plays_by_round) |>
+  tab_header(title="Figure 3", subtitle="Play by Round: Odd Split, $11") |>
+  cols_align("left") |>
+  opt_table_font(font=list(google_font(name="Times New Roman")))
+print(fig_3)
+```
+
+### Earnings per Game, based on split
+
+We create a for loop that collapses our data such that one row corresponds to one game for one player. We do so because we later want to generate graphs that show players' earnings per game based on their split and the proportion of time that they played either A or B.
+
+```{r}
+game_results_df<-data.frame()
+for(j in seq_along(unique(cleaned_df$Player))){
+  player_to_search<- paste("Player", j)
+  search_player<- cleaned_df[cleaned_df$Player== player_to_search,]
+  for(i in seq_along(unique(search_player$Game))){
+    game_to_search<- paste("Game", i)
+    search_game<- search_player[search_player$Game== game_to_search,]
+    if(nrow(search_game)==0){
+      next
+    }
+    total_game<- search_game$`Your Current Allocation`
+    
+    remove_nas<- total_game[is.na(total_game)==F]
+    last_val<- remove_nas[length(remove_nas)]
+    
+    plays<- search_game$`Your Play`
+    total_rounds<-length(na.omit(plays))
+    number_a<- sum(plays=="A", na.rm=T)
+    number_b<- sum(plays=="B", na.rm=T)
+    
+    game_df<- data.frame("Player ID"=j, "Game"=i, "Split"=unique(search_game$split), "pi_allocation"= unique(search_game$pi_allocation),  "Earned"=last_val, "NumbR"=total_rounds, "NumbA"=number_a, "NumbB"=number_b)
+    game_results_df<- rbind(game_results_df, game_df)
+  }
+}
+```
+
+### Overrall Split
+
+First, we create an overall table that shows players' earnings per game irregardless of their initial allocation and whether their split was odd or even.
+
+```{r}
+overall_results<- game_results_df %>%
+  group_by(Player.ID) %>%
+  summarize("EpG"= sum(Earned)/n(), "NumbA"=sum(NumbA), "NumbR"=sum(NumbR),
+            "NumbB"=sum(NumbB))
+
+overall_results<- overall_results[-4]
+
+per_player_earnings<- overall_results %>%
+  arrange(desc(EpG)) %>%
+  mutate(Player.ID = factor(Player.ID, levels = Player.ID))
+
+df_long_overall <- per_player_earnings %>%
+  pivot_longer(cols = starts_with("Numb"), names_to = "Category", values_to = "Count")
+
+# Compute proportions
+df_long_overall <- df_long_overall %>%
+  group_by(Player.ID) %>%
+  mutate(Prop = Count / sum(Count)) %>%
+  ungroup()
+
+# Multiply proportion by Earnings to get the segment height
+rename_cat<-function(x){
+  if(x=="NumbA"){
+    return("Proportion A")
+  }
+  else{
+    return("Proportion B")
+  }
+}
+
+df_long_overall <- df_long_overall %>%
+  mutate(SegmentHeight = Prop * EpG)
+
+df_long_overall$Category<- sapply(df_long_overall$Category, rename_cat)
+```
+
+```{r}
+ggplot(df_long_overall, aes(x = Player.ID, y = SegmentHeight, fill = Category)) +
+  geom_bar(stat = "identity") +
+  labs(x = "Player ID", y = "Earnings per Game", title = "Earnings Per Game", subtitle = "Overrall Performance")+
+  theme(
+    plot.title = element_text(hjust = 0.5), plot.subtitle = element_text(hjust = 0.5), panel.background = element_rect(fill="white"),
+    panel.grid.major.y = element_line(color="grey", size=0.4),
+    panel.grid.major.x=element_blank())+
+  scale_fill_manual(values=c("Proportion A"= "lightblue4", "Proportion B"="lightblue"))
+ggsave("/Users/wyatttheking/Desktop/Spring 2025/Politics in the Lab/Results Photos/Earnings_per_Game_overall.png")
+```
+
+### Game Results Even Split
+
+Next, we create a bar chart showing players earnings per game in the even split.
+
+```{r}
+game_results_even<- na.omit(game_results_df[game_results_df$Split== "even",])
+game_results_odd<- na.omit(game_results_df[game_results_df$Split== "odd",])
+
+per_player_earnings_even<-game_results_even %>%
+  group_by(Player.ID) %>%
+  summarize("EpG"= sum(Earned)/n(), "NumbA"=sum(NumbA), "NumbR"=sum(NumbR),
+            "NumbB"=sum(NumbB))
+```
+
+```{r}
+per_player_earnings_even<- per_player_earnings_even[-4]
+
+per_player_earnings_even<- per_player_earnings_even %>%
+  arrange(desc(EpG)) %>%
+  mutate(Player.ID = factor(Player.ID, levels = Player.ID))
+
+df_long <- per_player_earnings_even %>%
+  pivot_longer(cols = starts_with("Numb"), names_to = "Category", values_to = "Count")
+
+# Compute proportions
+df_long <- df_long %>%
+  group_by(Player.ID) %>%
+  mutate(Prop = Count / sum(Count)) %>%
+  ungroup()
+
+df_long <- df_long %>%
+  mutate(SegmentHeight = Prop * EpG)
+
+df_long$Category<- sapply(df_long$Category, rename_cat)
+
+ggplot(df_long, aes(x = factor(Player.ID), y = SegmentHeight, fill = Category)) +
+  geom_bar(stat = "identity") +
+  labs(x = "Player ID", y = "Earnings per Game", title = "Earnings Per Game", subtitle = "Even Split") +
+  theme(
+    plot.title = element_text(hjust = 0.5), plot.subtitle = element_text(hjust = 0.5), panel.background = element_rect(fill="white"),
+    panel.grid.major.y = element_line(color="grey", size=0.4),
+    panel.grid.major.x=element_blank())+
+  scale_fill_manual(values=c("Proportion A"= "lightblue4", "Proportion B"="lightblue"))
+ggsave("/Users/wyatttheking/Desktop/Spring 2025/Politics in the Lab/Results Photos/Earnings_per_Game_even.png")
+```
+
+### Bar Chart for Odd Split, $20 Initial Allocation
+
+```{r}
+game_results_odd_20<- na.omit(game_results_df[game_results_df$Split== "odd" & game_results_df$pi_allocation==20,])
+
+per_player_earnings_odd_20<-game_results_odd_20 %>%
+  group_by(Player.ID) %>%
+  summarize("EpG"= sum(Earned)/n(), "NumbA"=sum(NumbA), "NumbR"=sum(NumbR),
+            "NumbB"=sum(NumbB))
+```
+
+```{r}
+per_player_earnings_odd_20<- per_player_earnings_odd_20[-4]
+
+per_player_earnings_odd_20<- per_player_earnings_odd_20 %>%
+  arrange(desc(EpG)) %>%
+  mutate(Player.ID = factor(Player.ID, levels = Player.ID))
+
+df_long_odd_20 <- per_player_earnings_odd_20 %>%
+  pivot_longer(cols = starts_with("Numb"), names_to = "Category", values_to = "Count")
+
+# Compute proportions
+df_long_odd_20 <- df_long_odd_20 %>%
+  group_by(Player.ID) %>%
+  mutate(Prop = Count / sum(Count)) %>%
+  ungroup()
+
+df_long_odd_20 <- df_long_odd_20 %>%
+  mutate(SegmentHeight = Prop * EpG)
+
+df_long_odd_20$Category<- sapply(df_long_odd_20$Category, rename_cat)
+```
+
+```{r}
+ggplot(df_long_odd_20, aes(x = factor(Player.ID), y = SegmentHeight, fill = Category)) +
+  geom_bar(stat = "identity") +
+  labs(x = "Player ID", y = "Earnings per Game", title = "Earnings Per Game", subtitle = "Odd Split, $20") +
+  theme(
+    plot.title = element_text(hjust = 0.5), plot.subtitle = element_text(hjust = 0.5), panel.background = element_rect(fill="white"),
+    panel.grid.major.y = element_line(color="grey", size=0.4),
+    panel.grid.major.x=element_blank())+
+  scale_fill_manual(values=c("Proportion A"= "lightblue4", "Proportion B"="lightblue"))
+
+ggsave("/Users/wyatttheking/Desktop/Spring 2025/Politics in the Lab/Results Photos/Earnings_per_game_20.png")
+```
+
+### Bar Chart for Odd Split, $11 allocation
+
+```{r}
+game_results_odd_11<- na.omit(game_results_df[game_results_df$Split== "odd" & game_results_df$pi_allocation==11,])
+
+per_player_earnings_odd_11<-game_results_odd_11 %>%
+  group_by(Player.ID) %>%
+  summarize("EpG"= sum(Earned)/n(), "NumbA"=sum(NumbA), "NumbR"=sum(NumbR),
+            "NumbB"=sum(NumbB))
+```
+
+```{r}
+per_player_earnings_odd_11<- per_player_earnings_odd_11[-4]
+
+per_player_earnings_odd_11<- per_player_earnings_odd_11 %>%
+  arrange(desc(EpG)) %>%
+  mutate(Player.ID = factor(Player.ID, levels = Player.ID))
+
+df_long_odd_11 <- per_player_earnings_odd_11 %>%
+  pivot_longer(cols = starts_with("Numb"), names_to = "Category", values_to = "Count")
+
+# Compute proportions
+df_long_odd_11 <- df_long_odd_11 %>%
+  group_by(Player.ID) %>%
+  mutate(Prop = Count / sum(Count)) %>%
+  ungroup()
+
+df_long_odd_11 <- df_long_odd_11 %>%
+  mutate(SegmentHeight = Prop * EpG)
+
+df_long_odd_11$Category<- sapply(df_long_odd_11$Category, rename_cat)
+```
+
+```{r}
+ggplot(df_long_odd_11, aes(x = factor(Player.ID), y = SegmentHeight, fill = Category)) +
+  geom_bar(stat = "identity") +
+  labs(x = "Player ID", y = "Earnings per Game", title = "Earnings Per Game", subtitle = "Odd Split, $11") +
+  theme(
+    plot.title = element_text(hjust = 0.5), plot.subtitle = element_text(hjust = 0.5), panel.background = element_rect(fill="white"),
+    panel.grid.major.y = element_line(color="grey", size=0.4),
+    panel.grid.major.x=element_blank())+
+  scale_fill_manual(values=c("Proportion A"= "lightblue4", "Proportion B"="lightblue"))
+ggsave("/Users/wyatttheking/Desktop/Spring 2025/Politics in the Lab/Results Photos/Earnings_per_game_11.png")
+```
+
+### Wrap bar charts
+
+To better display our data, we decide to create a wrapped bar chart divided by the game split and players' initial allocations.
+
+```{r}
+df_long_odd_11
+df_long_odd_20
+
+odd_20_combine<- df_long_odd_20 %>%
+  mutate(Split= "Odd Split, $20")
+
+odd_11_combine<- df_long_odd_11 %>%
+  mutate(Split= "Odd Split, $11")
+
+even_to_combine<-df_long %>%
+  mutate(Split= "Even Split")
+```
+
+```{r}
+combine<- rbind(odd_20_combine, odd_11_combine, even_to_combine)
+```
+
+```{r}
+combine$Player.ID<- as.character(combine$Player.ID)
+combine$Player.ID<- as.numeric(combine$Player.ID)
+```
+
+
+```{r}
+ggplot(combine, aes(x = factor(Player.ID), y = SegmentHeight, fill = Category)) +
+  geom_bar(stat = "identity") +
+  labs(x = "Player ID", y = "Earnings per Game (Experimental Dollars)", title = "Figure 1", subtitle="Players' earnings, by game type") +
+  theme(
+    plot.title = element_text(hjust = 0, face="bold"), 
+    plot.subtitle = element_text(hjust = 0), 
+    panel.background = element_rect(fill="white"),
+    panel.grid.major.y = element_line(color="grey", size=0.4),
+    panel.grid.major.x=element_blank(),
+    legend.position = c(.7, 0.25),
+    text = element_text(family="Times New Roman", size=16),
+    plot.margin= margin(t=25,
+                        r=25,
+                        b=25,
+                        l=25))+
+  guides(fill=guide_legend(title="Players' Moves"))+
+  scale_fill_manual(values=c("Proportion A"= "lightblue4", "Proportion B"="lightblue"))+
+  facet_wrap(~ Split, nrow=2, shrink=F, scales="free")
+
+ggsave("/Users/wyatttheking/Desktop/Spring 2025/Politics in the Lab/Results Photos/Panel Wrap7.png", height=10.5, width=8)
+```
+
+
+```{r}
+per_player_earnings_odd<- per_player_earnings_even[-4]
+
+per_player_earnings_even<- per_player_earnings_even %>%
+  arrange(desc(EpG)) %>%
+  mutate(Player.ID = factor(Player.ID, levels = Player.ID))
+
+df_long <- per_player_earnings_even %>%
+  pivot_longer(cols = starts_with("Numb"), names_to = "Category", values_to = "Count")
+
+# Compute proportions
+df_long <- df_long %>%
+  group_by(Player.ID) %>%
+  mutate(Prop = Count / sum(Count)) %>%
+  ungroup()
+
+# Multiply proportion by Earnings to get the segment height
+rename_cat<-function(x){
+  if(x=="NumbA"){
+    return("Proportion A")
+  }
+  else{
+    return("Proportion B")
+  }
+}
+
+df_long <- df_long %>%
+  mutate(SegmentHeight = Prop * EpG)
+
+df_long$Category<- sapply(df_long$Category, rename_cat)
+
+ggplot(df_long, aes(x = factor(Player.ID), y = SegmentHeight, fill = Category)) +
+  geom_bar(stat = "identity") +
+  labs(x = "Player ID", y = "Earnings per Game", title = "Earnings Per Game", subtitle = "Even Split") +
+  theme(
+    plot.title = element_text(hjust = 0.5), plot.subtitle = element_text(hjust = 0.5), panel.background = element_rect(fill="white"),
+    panel.grid.major.y = element_line(color="grey", size=0.4),
+    panel.grid.major.x=element_blank())+
+  scale_fill_manual(values=c("Proportion A"= "lightblue4", "Proportion B"="lightblue"))
+
+ggsave(filenam="/Users/wyatttheking/Desktop/Spring 2025/Politics in the Lab/Results Photos/Earnings Per Game.png", width = 16, height = 9, dpi = 100)
+```
+
+
+
+```{r}
+per_player_earnings_odd<- per_player_earnings_even[-4]
+
+per_player_earnings_even<- per_player_earnings_even %>%
+  arrange(desc(EpG)) %>%
+  mutate(Player.ID = factor(Player.ID, levels = Player.ID))
+
+df_long <- per_player_earnings_even %>%
+  pivot_longer(cols = starts_with("Numb"), names_to = "Category", values_to = "Count")
+
+# Compute proportions
+df_long <- df_long %>%
+  group_by(Player.ID) %>%
+  mutate(Prop = Count / sum(Count)) %>%
+  ungroup()
+
+# Multiply proportion by Earnings to get the segment height
+rename_cat<-function(x){
+  if(x=="NumbA"){
+    return("Proportion A")
+  }
+  else{
+    return("Proportion B")
+  }
+}
+
+df_long <- df_long %>%
+  mutate(SegmentHeight = Prop * EpG)
+
+df_long$Category<- sapply(df_long$Category, rename_cat)
+
+ggplot(df_long, aes(x = factor(Player.ID), y = SegmentHeight, fill = Category)) +
+  geom_bar(stat = "identity") +
+  labs(x = "Player ID", y = "Earnings per Game", title = "Earnings Per Game", subtitle = "Even Split") +
+  theme(
+    plot.title = element_text(hjust = 0.5), plot.subtitle = element_text(hjust = 0.5), panel.background = element_rect(fill="white"),
+    panel.grid.major.y = element_line(color="grey", size=0.4),
+    panel.grid.major.x=element_blank())+
+  scale_fill_manual(values=c("Proportion A"= "lightblue4", "Proportion B"="lightblue"))
+```
+ 
+
+```{r}
+per_round_earnings<-game_results_df %>%
+  group_by(Split) %>%
+  summarize("NumbA"=sum(NumbA), "NumbB"= sum(NumbB), "NumbR"=sum(NumbR))
+
+even_split<-na.omit(game_results_df[game_results_df$Split=="even",])
+even_split %>%
+  group_by(Game) %>%
+  summarize("PropA"=sum(NumbA)/sum(NumbR), "PropB"= sum(NumbB)/sum(NumbR), "NumbR"=sum(NumbR))
+
+
+```
+
+```{r}
+sum(per_player_earnings$NumbA)/sum(per_player_earnings$NumbR)
+```
+
+
