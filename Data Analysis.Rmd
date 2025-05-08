@@ -1,5 +1,5 @@
 ---
-title: "PLab Data Analysis"
+title: "Politics in the Lab: Data Cleanong and Analysis... sort of"
 author: "Wyatt King & Oliver Fuisz"
 date: "2025-04-20"
 output: html_document
@@ -12,6 +12,10 @@ library(webshot2)
 library(gt)
 library(ggplot2)
 library(tidyr)
+library(stargazer)
+library(Matrix)
+library(logistf)
+require(lme4)
 ```
 
 # Data Cleaning
@@ -150,6 +154,23 @@ split_c<- function(x, y){
 updated_df$split<- mapply(split_c, updated_df$pi_allocation, updated_df$oi_allocation)
 ```
 
+```{r}
+df_r1<- na.omit(updated_df[updated_df$`Round Number`==1,])
+
+
+nrow(df_r1[df_r1$split=="even",])/2
+nrow(df_r1[updated_df$split=="odd",])/2
+```
+
+
+We calculate the proportion of games that were even splits and the proportion of games that were odd splits.
+
+```{r}
+mean(updated_df$split== "even", na.rm=T)
+mean(updated_df$split== "odd", na.rm=T)
+```
+
+
 We write our data locally.
 
 ```{r}
@@ -196,20 +217,72 @@ convert_y_var<- function(x){
 
 reg_data$y_play<- sapply(reg_data$y_play, convert_y_var)
 reg_data$split<- as.factor(reg_data$split)
+reg_data$Player<- as.factor(reg_data$Player)
+```
 
-m1<-glm(y_play~Round+Game+pi_allocation+oi_allocation, family="binomial", data=reg_data)
+```{r}
+m1<-glm(y_play~Round+Game+pi_allocation+oi_allocation+Player, family="binomial", data=reg_data)
 sum_m1<-summary(m1)
+```
 
+```{r}
 reg_df<-as.data.frame(sum_m1$coefficients)
 reg_df<-round(reg_df, 3)
+```
 
+```{r}
+reg_df<- reg_df[-c(6:16),]
+```
+
+```{r}
+rownames(reg_df)<- c("Constant", "Round", "Game", "Principal Initial Allocation", "Opponenet Initial Allocation")
+reg_df<-reg_df[c(2:5, 1), -3]
+colnames(reg_df)<- c("Estimate", "Standard Error", "p-value")
+```
+
+```{r}
 gt::gt(reg_df, rownames_to_stub=T) |>
   tab_header(title="Figure 4", subtitle="Results from Logistic Regression Model") |>
   cols_align("left") |>
-  opt_table_font(font=list(google_font(name="Times New Roman")))
-print(fig_2)
-
+  opt_table_font(font=list(google_font(name="Times New Roman"))) |>
+  tab_footnote("Note: Fixed effects for players not shown. Estimates represent change in log odds ratio.")
 ```
+
+### We conduct another regression looking at the even data
+
+```{r}
+even_equil<- data.frame(
+  Round= c(1, 2, 3, 4),
+  eqil= c(1-12/31, 1-7/19, 1-1/3, 1)
+)
+```
+
+```{r}
+reg_data_even<- reg_data[reg_data$split=="even",]
+reg_data_even<- merge(reg_data_even, even_equil, by="Round")
+
+plot(reg_data_even$Round, reg_data_even$eqil)
+```
+
+```{r}
+reg_m3<- glm(y_play~eqil, data=reg_data_even, family="binomial")
+reg_m2<- glm(y_play~eqil+as.factor(Round), data=reg_data_even, family="binomial")
+sum_reg_m2<-summary(reg_m2)
+
+coefs_reg2<-sum_reg_m2$coefficients
+exp(coefs_reg2)
+rownames(coefs_reg2)<- c("Constant", "Eqilibrium", "Round 2", "Round 3")
+
+stargazer(reg_m3, reg_m2, summary = FALSE, rownames = T, title = "")
+
+al_output<-alias(reg_m2)
+summary(as.factor(reg_data_even$Round))
+```
+
+```{r}
+logistf_m2<- logistf(y_play~eqil+as.factor(Round), data=reg_data_even)
+```
+
 
 ### Proportion of people who defect in the even split
 
@@ -236,10 +309,15 @@ even_plays_by_round<-no_na_even %>%
 
 even_plays_by_round$`Proportion Defect`<- round(even_plays_by_round$`Proportion Defect`, digits=3)
 
-even_plays_by_round$Equilibrium<- c(0.626, 0.632, 0.667, 1)
+even_plays_by_round$Equilibrium<- c(round(1-12/31, 3), 0.632, 0.667, 1)
 
 even_plays_by_round<-even_plays_by_round[, c("Round Number", "Proportion Defect", "Equilibrium", "n")]
 ```
+
+```{r}
+stargazer(even_plays_by_round, summary = FALSE, rownames = FALSE, title = "Even Split, Play by Round")
+```
+
 
 ```{r}
 fig_1<-gt(even_plays_by_round) |>
@@ -249,7 +327,7 @@ fig_1<-gt(even_plays_by_round) |>
 print(fig_1)
 ```
 
-### Proportion of people who defect in the even split
+### Proportion of people who defect in the odd split
 
 We generate tables displaying what proportion of people defect in an odd split scenario based on the round number and whether they were the \$20 or \$11 share.
 
@@ -565,7 +643,6 @@ ggplot(combine, aes(x = factor(Player.ID), y = SegmentHeight, fill = Category)) 
 ggsave("/Users/wyatttheking/Desktop/Spring 2025/Politics in the Lab/Results Photos/Panel Wrap7.png", height=10.5, width=8)
 ```
 
-
 ```{r}
 per_player_earnings_odd<- per_player_earnings_even[-4]
 
@@ -651,7 +728,47 @@ ggplot(df_long, aes(x = factor(Player.ID), y = SegmentHeight, fill = Category)) 
     panel.grid.major.x=element_blank())+
   scale_fill_manual(values=c("Proportion A"= "lightblue4", "Proportion B"="lightblue"))
 ```
- 
+
+### Splits Over Time
+
+```{r}
+test_df<-game_results_df %>%
+  group_by(Game) %>%
+  summarize(Prop_Even= sum(Split=="even"), Prop_Odd= sum(Split=="odd"))
+
+test_df<-test_df[test_df$Game %in% 1:5,]
+
+sum(test_df$Prop_Even)/(sum(test_df$Prop_Even)+sum(test_df$Prop_Odd))
+
+prop_odd_df<-test_df[, c("Game", "Prop_Odd")] %>%
+  mutate(Split="Odd")
+
+prop_even_df<-test_df[, c("Game", "Prop_Even")] %>%
+  mutate(Split="Even")
+
+colnames(prop_odd_df)[2]<- "Proportion"
+colnames(prop_even_df)[2]<- "Proportion"
+
+prop_df<- rbind(prop_odd_df, prop_even_df)
+
+ggplot(data=prop_df, aes(x=factor(Game), y=Proportion, fill=Split))+
+         geom_bar(stat="identity")+
+  labs(x = "Game", y = "", title = "Figure 1", subtitle = "Play Over Time")
+```
+
+
+### Plays Over Time
+
+```{r}
+even_split_df<- game_results_df[game_results_df$Split== "even",]
+
+sum_even_df<- even_split_df %>%
+  group_by(Game) %>%
+  summarize("PropA"=sum(NumbA)/sum(NumbR), 
+            "PropB"=sum(NumbB)/sum(NumbR), 
+            "NumbR"=sum(NumbR),
+            "NumbG"=length(unique(Player.ID))/2)
+```
 
 ```{r}
 per_round_earnings<-game_results_df %>%
