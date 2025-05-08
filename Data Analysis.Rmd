@@ -13,17 +13,14 @@ library(gt)
 library(ggplot2)
 library(tidyr)
 library(stargazer)
-library(Matrix)
-library(logistf)
-require(lme4)
 ```
 
 # Data Cleaning
 
 ```{r}
-files<- list.files("/Users/wyatttheking/Desktop/Spring 2025/Politics in the Lab/FINISHED GAMES")
-paths<- paste0("/Users/wyatttheking/Desktop/Spring 2025/Politics in the Lab/FINISHED GAMES/", files)
-paths<-paths[c(2, 6:13, 3:5)]
+getwd()
+files<- list.files("New folder")
+paths<-files[c(1, 5:12, 2:4)]
 ```
 
 First, we're going to build a data frame that compiles all of the individual spreadsheets into one larger, cumulative spreadsheet.
@@ -33,7 +30,7 @@ data<- data.frame()
 for(i in seq_along(paths)){
   df<- data.frame()
   for(j in 3:23){
-    excel<- read_xlsx(paths[i], sheet=j, range = "B3:G7")
+    excel<- read_xlsx(paste0("New folder/", paths[i]), sheet=j, range = "B3:G7")
     excel<- excel %>%
       mutate(Game= paste0("Game ", j-2)) # Create a column indicating the game number
     df<- rbind(df, excel)
@@ -48,7 +45,7 @@ Next, we're going to merge with the player assignments spreadsheet to get player
 
 ```{r}
 # Call the player assignments
-player_assignments<- read.csv("/Users/wyatttheking/Desktop/Spring 2025/Politics in the Lab/Player Assignment - Static Sheet.csv")
+player_assignments<- read.csv("Player Assignment - Static Sheet.csv")
 
 # Drop the trial rounds
 player_assignments<-player_assignments[-c(66:71)]
@@ -174,7 +171,7 @@ mean(updated_df$split== "odd", na.rm=T)
 We write our data locally.
 
 ```{r}
-write_path<- paste0("/Users/wyatttheking/Desktop/Spring 2025/Politics in the Lab/FINISHED GAMES/Uncleaned Data.csv")
+write_path<- paste0("Uncleaned Data.csv")
 write.csv(updated_df, file=write_path)
 ```
 
@@ -190,7 +187,7 @@ cleaned_df<-updated_df[is.na(updated_df$split)==F,]
 We write our cleaned data set locally.
 
 ```{r}
-write_path<- paste0("/Users/wyatttheking/Desktop/Spring 2025/Politics in the Lab/FINISHED GAMES/Cleaned Data.csv")
+write_path<- paste0("Cleaned Data.csv")
 write.csv(cleaned_df, file=write_path)
 ```
 
@@ -248,6 +245,70 @@ gt::gt(reg_df, rownames_to_stub=T) |>
   tab_footnote("Note: Fixed effects for players not shown. Estimates represent change in log odds ratio.")
 ```
 
+### Even: Difference of Proprtions Test
+
+```{r}
+diff_prop_even<-reg_data[reg_data$split== "even",]
+```
+
+```{r}
+diff_prop_data<-diff_prop_even %>%
+  group_by(Round)%>%
+  summarize(n=n(), a=mean(y_play==1)*n())
+```
+
+First, we run difference of proportions tests, comparing how respondents play to if they were just randomly selecting either A or B.
+
+```{r}
+binom_1<-binom.test(diff_prop_data$a[1], diff_prop_data$n[1])
+binom_2<-binom.test(diff_prop_data$a[2], diff_prop_data$n[2])
+binom_3<-binom.test(diff_prop_data$a[3], diff_prop_data$n[3])
+binom_4<-binom.test(diff_prop_data$a[4], diff_prop_data$n[4])
+```
+
+```{r}
+binom_tests1<-data.frame(
+  "Estimate"= round(c(binom_1$estimate, binom_2$estimate, binom_3$estimate, binom_4$estimate), 3),
+  "P-Value"= c(binom_1$p.value, binom_2$p.value, binom_3$p.value, binom_4$p.value),
+  row.names = c("Round 1", "Round 2", "Round 3", "Round 4")
+)
+```
+
+
+Next, we do the same thing, looking at how they compare to the mixed strategy equilibrium.
+
+```{r}
+even_equil<- data.frame(
+  Round= c(1, 2, 3, 4),
+  eqil= c(1-12/31, 1-7/19, 1-1/3, 1)
+)
+```
+
+```{r}
+binom_5<-binom.test(diff_prop_data$a[1], diff_prop_data$n[1], p=even_equil$eqil[1])
+binom_6<-binom.test(diff_prop_data$a[2], diff_prop_data$n[2], p=even_equil$eqil[2])
+binom_7<-binom.test(diff_prop_data$a[3], diff_prop_data$n[3], p=even_equil$eqil[3])
+binom_8<-binom.test(diff_prop_data$a[4], diff_prop_data$n[4], p=even_equil$eqil[4])
+```
+
+```{r}
+binom_tests2<-data.frame(
+  "Estimate"= round(c(binom_5$estimate, binom_6$estimate, binom_7$estimate, binom_8$estimate), 3),
+  "P-Value"= c(binom_5$p.value, binom_6$p.value, binom_7$p.value, binom_8$p.value),
+  row.names = c("Round 1", "Round 2", "Round 3", "Round 4")
+)
+```
+
+```{r}
+binom_tests<-merge(binom_tests1, binom_tests2, by="Estimate")
+row.names(binom_tests)<-row.names(binom_tests2)
+colnames(binom_tests)<- c("Estimate","Random", "Equilibrium")
+
+stargazer(binom_tests, rownames = T, colnames = T, summary=F, title = "Even Split, Binomial Tests")
+?stargazer
+```
+
+
 ### We conduct another regression looking at the even data
 
 ```{r}
@@ -256,6 +317,7 @@ even_equil<- data.frame(
   eqil= c(1-12/31, 1-7/19, 1-1/3, 1)
 )
 ```
+
 
 ```{r}
 reg_data_even<- reg_data[reg_data$split=="even",]
@@ -317,7 +379,6 @@ even_plays_by_round<-even_plays_by_round[, c("Round Number", "Proportion Defect"
 ```{r}
 stargazer(even_plays_by_round, summary = FALSE, rownames = FALSE, title = "Even Split, Play by Round")
 ```
-
 
 ```{r}
 fig_1<-gt(even_plays_by_round) |>
